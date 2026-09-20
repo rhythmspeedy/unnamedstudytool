@@ -2,6 +2,8 @@
 
 A native, offline Mac study workspace with flashcards, notes, to-do lists, and a Pomodoro timer. Requires macOS 14 or later.
 
+[Download the Mac app](https://github.com/rhythmspeedy/unnamedstudytool/releases/latest) — Apple Silicon (M-series), macOS 14+. Download the app ZIP under **Assets**, unzip it, and drag the app into Applications. The current release is not Apple-notarized; see the signing notice below.
+
 ## Your workspace
 
 The Home page opens Flashcards, To-do, or Pomodoro in any order. Navigation remains available at the top of each tool. Switching tools closes that tool’s temporary view; your decks and tasks remain saved. Pomodoro state belongs to the app and continues across navigation, including flashcard focus sessions.
