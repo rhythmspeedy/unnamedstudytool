@@ -4,6 +4,9 @@ struct TodoItem: Identifiable, Codable, Equatable {
     var id = UUID()
     var title: String
     var done = false
+    var scheduledDay: CalendarDay?
+    var dueDay: CalendarDay?
+    var materials: [StudyItemReference]?
 }
 
 struct TodoList: Identifiable, Codable, Equatable {
@@ -16,15 +19,19 @@ struct TodoList: Identifiable, Codable, Equatable {
 final class TodoStore: ObservableObject {
     @Published private(set) var lists: [TodoList] = []
     @Published var error: String?
-    private let url: URL
-    private var loaded = false
+    let url: URL
+    private(set) var loaded = false
+    var didSave: (([TodoList], [TodoList]) -> Void)?
+    func acceptRestored(_ values: [TodoList]) { lists = values; loaded = true; error = nil }
 
     init(url: URL? = nil) {
         self.url = url ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("unnamedstudytool/todos.json")
         do {
             if FileManager.default.fileExists(atPath: self.url.path) {
-                lists = try JSONDecoder().decode([TodoList].self, from: Data(contentsOf: self.url))
+                let decoded = try JSONDecoder().decode([TodoList].self, from: Data(contentsOf: self.url))
+                try Self.validate(decoded)
+                lists = decoded
             }
             if lists.isEmpty { lists = [TodoList(name: "My list")] }
             loaded = true
@@ -34,15 +41,25 @@ final class TodoStore: ObservableObject {
     @discardableResult func save(_ updated: [TodoList]) -> Bool {
         guard loaded else { error = "Saving is disabled until your to-do file can be read. Reopen the app after restoring todos.json."; return false }
         do {
+            try Self.validate(updated)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: url.path) {
+                try Data(contentsOf: url).write(to: url.deletingPathExtension().appendingPathExtension("previous.json"), options: .atomic)
+            }
             try JSONEncoder().encode(updated).write(to: url, options: .atomic)
+            let previous = lists
             lists = updated
+            didSave?(previous, updated)
             return true
         } catch { self.error = "Could not save to-do changes. \(error.localizedDescription)"; return false }
     }
 
     @discardableResult func update(_ list: TodoList) -> Bool {
         save(lists.map { $0.id == list.id ? list : $0 })
+    }
+    nonisolated static func validate(_ lists: [TodoList]) throws {
+        let ids = lists.map(\.id) + lists.flatMap(\.items).map(\.id)
+        guard Set(ids).count == ids.count else { throw WorkspaceFailure.invalid("The to-do file contains duplicate identifiers.") }
     }
 }
 
@@ -92,9 +109,16 @@ final class PomodoroStore: ObservableObject {
     @Published private(set) var clock = PomodoroClock()
     @Published var notice: String?
     private let defaults: UserDefaults
+    var onCompletion: ((UUID, TimeInterval) -> Void)?
+    var onStateChange: (() -> Void)?
+    private var intervalID = UUID()
+    private var ticker: Timer?
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         clock.reset(minutes: minutes(.focus))
+        ticker = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.tick() }
+        }
     }
     func minutes(_ phase: PomodoroClock.Phase) -> Int {
         let key = phase == .focus ? "pomodoroFocus" : phase == .shortBreak ? "pomodoroShort" : "pomodoroLong"
@@ -106,18 +130,26 @@ final class PomodoroStore: ObservableObject {
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
     func toggle() {
+        tick()
         if clock.running { clock.pause(now: Date()) }
         else { clock.start(now: Date()) }
+        onStateChange?()
     }
     func tick() {
         // A deadline stays accurate across navigation, backgrounding, and sleep.
         guard clock.running else { return }
-        if clock.tick(now: Date()) { notice = "\(clock.phase.rawValue) complete. Ready for \(clock.phase == .focus ? "a break" : "another focus session")?" }
+        if clock.tick(now: Date()) {
+            if clock.phase == .focus { onCompletion?(intervalID, clock.duration) }
+            notice = "\(clock.phase.rawValue) complete. Ready for \(clock.phase == .focus ? "a break" : "another focus session")?"
+            onStateChange?()
+        }
     }
-    func reset() { clock.reset(minutes: minutes(clock.phase)); notice = nil }
+    func reset() { clock.reset(minutes: minutes(clock.phase)); notice = nil; intervalID = UUID(); onStateChange?() }
     func next() {
         clock.nextPhase(focus: minutes(.focus), short: minutes(.shortBreak), long: minutes(.longBreak))
         notice = nil
         clock.start(now: Date())
+        intervalID = UUID()
+        onStateChange?()
     }
 }

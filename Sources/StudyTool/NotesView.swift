@@ -2,6 +2,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct NotesView: View {
+    @EnvironmentObject private var hub: StudyHub
+    @EnvironmentObject private var router: StudyRouter
+    @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var store: NotesStore
     @EnvironmentObject private var editors: NoteEditorCache
     @AppStorage("theme") private var theme: StudyTheme = .graphite
@@ -14,6 +17,7 @@ struct NotesView: View {
     @State private var confirmRecovery = false
 
     var body: some View {
+        let matches = store.matchingNotes
         HSplitView {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
@@ -26,14 +30,14 @@ struct NotesView: View {
                     TextField("Search notes", text: $store.search).textFieldStyle(.plain).focused($focus, equals: .search)
                         .accessibilityLabel("Search notes")
                     if !store.search.isEmpty {
-                        Button { store.search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).help("Clear search")
+                        Button { store.search = "" } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.plain).help("Clear search").accessibilityLabel("Clear note search")
                     }
                 }.padding(10).background(theme.background, in: RoundedRectangle(cornerRadius: 8))
                 Button { newNote() } label: { Label("New note", systemImage: "plus").frame(maxWidth: .infinity) }
                     .controlSize(.large).keyboardShortcut("n").disabled(!store.loaded)
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(store.matchingNotes) { note in
+                        ForEach(matches) { note in
                             Button { if store.select(note.id) { focus = nil } } label: {
                                 VStack(alignment: .leading, spacing: 7) {
                                     Text(note.displayTitle).font(.body.weight(.semibold)).lineLimit(2)
@@ -45,7 +49,7 @@ struct NotesView: View {
                                     .contentShape(Rectangle())
                             }.buttonStyle(.plain).accessibilityAddTraits(store.selectedID == note.id ? .isSelected : [])
                         }
-                        if store.matchingNotes.isEmpty && !store.search.isEmpty {
+                        if matches.isEmpty && !store.search.isEmpty {
                             Text("No matching notes.\nTry a different word.").font(.callout).foregroundStyle(.secondary).padding(.top, 20)
                         }
                     }.padding(1)
@@ -58,6 +62,7 @@ struct NotesView: View {
                     }
                 }
             }.padding(20).frame(minWidth: 230, idealWidth: 260, maxWidth: 300).background(theme.surface)
+                .frame(width: router.focused ? 0 : nil).clipped().accessibilityHidden(router.focused)
 
             Group {
                 if let note = store.selected {
@@ -67,16 +72,24 @@ struct NotesView: View {
                             if store.saveFailed { Button("Retry save") { store.flush() } }
                             Spacer()
                             Menu {
+                                ItemActions(reference: .init(kind: .note, id: note.id))
+                                Button("Create flashcard from selection…") {
+                                    guard let text = editors.views[note.id]?.documentView as? NSTextView, text.selectedRange().length > 0 else {
+                                        store.error = "Select some text in the note first."; return
+                                    }
+                                    hub.captureCard(from: (text.string as NSString).substring(with: text.selectedRange()))
+                                }
+                                Divider()
                                 Button("Export as text…") { export(note) }
                                 Divider()
                                 Button("Delete note", role: .destructive) { store.deleteSelected() }
-                            } label: { Image(systemName: "ellipsis").padding(6) }.menuStyle(.borderlessButton).frame(width: 30).help("Note options")
+                            } label: { Image(systemName: "ellipsis").padding(6) }.menuStyle(.borderlessButton).frame(width: 30).help("Note options").accessibilityLabel("Note options")
                         }.padding(.horizontal, 22)
                         TextField("Untitled note", text: Binding(get: { store.selected?.title ?? "" }, set: { store.edit(id: note.id, title: $0) }))
                             .font(.system(size: 30, weight: .medium, design: .serif)).textFieldStyle(.plain)
                             .focused($focus, equals: .title).accessibilityLabel("Note title").padding(.horizontal, 22)
                         Divider().padding(.horizontal, 22)
-                        NoteEditor(note: note, store: store, cache: editors, theme: theme).id(note.id)
+                        NoteEditor(note: note, store: store, cache: editors, theme: theme, createCard: { hub.captureCard(from: $0) }).id(note.id)
                     }.padding(.top, 22).padding(.horizontal, 12).frame(maxWidth: 820, maxHeight: .infinity)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if !store.loaded {
@@ -96,6 +109,7 @@ struct NotesView: View {
             Button("Search notes") { focus = .search }.keyboardShortcut("f").hidden().accessibilityHidden(true)
         }
         .onDisappear { store.flush() }
+        .onChange(of: store.selectedID, initial: true) { _, id in if let id { workspace.opened(.init(kind: .note, id: id)) } }
         .fileExporter(isPresented: $exporting, document: document, contentType: .plainText, defaultFilename: exportName) { result in
             if case .failure(let error) = result { exportError = "Export failed: \(error.localizedDescription)" }
         }

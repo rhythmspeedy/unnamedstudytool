@@ -1,37 +1,58 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+#if !STUDY_CHECKS
 @main
+#endif
 struct StudyToolApp: App {
     @NSApplicationDelegateAdaptor(StudyAppDelegate.self) private var appDelegate
-    @StateObject private var library = Library()
-    @StateObject private var todos = TodoStore()
-    @StateObject private var pomodoro = PomodoroStore()
-    @StateObject private var notes = NotesStore()
-    @StateObject private var noteEditors = NoteEditorCache()
+    @StateObject private var hub = StudyHub()
+    @AppStorage("menuBarTimer") private var menuBarTimer = false
+    @State private var showingIntro = true
     var body: some Scene {
         Window("unnamedstudytool", id: "main") {
-            WorkspaceView().environmentObject(library).environmentObject(todos).environmentObject(pomodoro)
-                .environmentObject(notes).environmentObject(noteEditors)
+            WorkspaceView().studyEnvironment(hub)
                 .modifier(AppAppearance())
                 .frame(minWidth: 820, minHeight: 580)
-                .onAppear { appDelegate.notes = notes }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in notes.flush() }
-                .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in notes.flush() }
+                .disabled(showingIntro)
+                .accessibilityHidden(showingIntro)
+                .overlay {
+                    if showingIntro {
+                        LaunchIntro { showingIntro = false }
+                            .transition(.opacity)
+                    }
+                }
+                .onAppear { appDelegate.notes = hub.notes; appDelegate.workspace = hub.workspace }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in hub.notes.flush(); hub.workspace.flush() }
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { _ in hub.notes.flush(); hub.workspace.flush() }
         }
         .defaultSize(width: 1100, height: 760)
-        .commands { CommandGroup(replacing: .newItem) {} }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Link("Download updates…", destination: URL(string: "https://github.com/rhythmspeedy/unnamedstudytool/releases/latest")!)
+            }
+            CommandGroup(replacing: .newItem) {}
+            CommandMenu("Study") {
+                Button("Quick capture") { hub.run(.capture(CaptureKind(rawValue: hub.defaults.string(forKey: "lastCaptureKind") ?? "Task") ?? .task)) }.keyboardShortcut(.space, modifiers: [.command, .shift])
+                Button("Command palette") { hub.router.palette = true }.keyboardShortcut("k")
+                Button("Toggle focus mode") { hub.run(.focusMode) }.keyboardShortcut("f", modifiers: [.command, .shift])
+            }
+        }
 
         Settings {
-            StudySettingsView()
+            StudySettingsView().studyEnvironment(hub)
         }
+        MenuBarExtra(isInserted: $menuBarTimer) { MenuTimerView().studyEnvironment(hub) } label: { MenuTimerLabel(timer: hub.pomodoro) }
     }
 }
 
 struct ContentView: View {
     @EnvironmentObject private var library: Library
+    @EnvironmentObject private var hub: StudyHub
+    @EnvironmentObject private var router: StudyRouter
+    @EnvironmentObject private var workspace: WorkspaceStore
     @AppStorage("theme") private var theme: StudyTheme = .graphite
-    @State private var selection: UUID?
+    private var selection: UUID? { get { router.deckID } nonmutating set { router.deckID = newValue } }
     @State private var search = ""
     @State private var deckEditor = false
     @State private var deckName = ""
@@ -48,6 +69,11 @@ struct ContentView: View {
     @State private var exporting = false
     @State private var exportDocument = LibraryDocument()
     @State private var sidebarVisible = true
+    @State private var combining = false
+    @State private var combinedIDs: Set<UUID> = []
+    @State private var resetProgress = false
+    @State private var importingText = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var focusedField: EditorField?
     private enum EditorField: Hashable { case deckName, front, back }
 
@@ -62,6 +88,16 @@ struct ContentView: View {
                 StudyView(initial: session) { self.session = nil }
             } else {
                 libraryView
+            }
+        }
+        .onChange(of: router.deckID) { _, _ in session = nil }
+        .task {
+            if router.reviewRequested {
+                router.reviewRequested = false
+                let cards = hub.dueCards
+                let ids = Set(cards.map(\.id))
+                let sources = Dictionary(uniqueKeysWithValues: library.decks.flatMap { deck in deck.cards.filter { ids.contains($0.id) }.map { ($0.id, deck.id) } })
+                if !cards.isEmpty { session = StudySession(cards: cards, shuffled: false, sources: sources, sourceNames: Dictionary(uniqueKeysWithValues: library.decks.map { ($0.id, $0.name) })) }
             }
         }
     }
@@ -113,6 +149,8 @@ struct ContentView: View {
                     Button { newDeck() } label: { Label("New deck", systemImage: "plus").frame(maxWidth: .infinity) }
                         .controlSize(.large).keyboardShortcut("n")
                     Menu {
+                        Button("Import pasted text or CSV…") { importingText = true }
+                        Button("Study multiple decks…") { combinedIDs = []; combining = true }
                         Button("Import library…") { importing = true }
                         Button("Export library…") { exportDocument = LibraryDocument(decks: library.decks); exporting = true }
                     } label: { Label("Library backup", systemImage: "externaldrive") }
@@ -121,6 +159,7 @@ struct ContentView: View {
             }
             .background(theme.surface)
             .frame(minWidth: 210, idealWidth: 240, maxWidth: 300)
+            .frame(width: router.focused ? 0 : nil).clipped().accessibilityHidden(router.focused)
             }
             ZStack {
                 LinearGradient(colors: [theme.background, theme.surface.opacity(0.45)], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea()
@@ -139,8 +178,36 @@ struct ContentView: View {
             }
         }
         .tint(theme.accent)
-        .onChange(of: selection) { _, _ in search = "" }
+        .sheet(isPresented: $importingText) { CardImportView(initialDeckID: selection) }
+        .onChange(of: selection) { _, value in
+            search = ""
+            if let value { workspace.opened(.init(kind: .deck, id: value)) }
+        }
         .onAppear { if selection == nil { selection = library.decks.first?.id } }
+        .onChange(of: router.newDeckRequested) { _, value in if value { router.newDeckRequested = false; newDeck() } }
+        .task { if router.newDeckRequested { router.newDeckRequested = false; newDeck() } }
+        .sheet(isPresented: $combining) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text("Study together").font(.title2)
+                Text("Choose decks for a temporary session. Empty decks are unavailable.").foregroundStyle(.secondary)
+                List(library.decks, selection: $combinedIDs) { item in
+                    Text("\(item.name) · \(item.cards.count) cards").tag(item.id).disabled(item.cards.isEmpty)
+                }.frame(height: 240)
+                Toggle("Shuffle", isOn: $shuffled)
+                HStack {
+                    Button("Cancel") { combining = false }.keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("Start session") {
+                        let decks = library.decks.filter { combinedIDs.contains($0.id) && !$0.cards.isEmpty }
+                        start(decks, resume: false); combining = false
+                    }.disabled(!library.decks.contains { combinedIDs.contains($0.id) && !$0.cards.isEmpty })
+                }
+            }.padding(26).frame(width: 440).modifier(AppAppearance())
+        }
+        .alert("Reset this deck’s progress?", isPresented: $resetProgress) {
+            Button("Reset", role: .destructive) { if let selection { workspace.change { $0.progress[selection] = nil } } }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Cards and study history remain saved.") }
         .sheet(isPresented: $deckEditor) {
             VStack(alignment: .leading, spacing: 20) {
                 Text(renaming ? "Rename deck" : "A new place to learn.").font(.title2.weight(.semibold))
@@ -168,7 +235,7 @@ struct ContentView: View {
                 if library.save(library.decks.filter { $0.id != selection }) { selection = library.decks.first?.id }
             }
             Button("Cancel", role: .cancel) {}
-        } message: { Text("All cards in this deck will be deleted. This cannot be undone.") }
+        } message: { Text("Recover this deck for 30 days in Settings → Data → Recently deleted.") }
         .alert("Delete this card?", isPresented: Binding(get: { deletingCard != nil }, set: { if !$0 { deletingCard = nil } })) {
             Button("Delete card", role: .destructive) {
                 if var deck, let card = deletingCard { deck.cards.removeAll { $0.id == card.id }; update(deck) }
@@ -207,18 +274,27 @@ struct ContentView: View {
                 }
                 Spacer()
                 Menu {
+                    ItemActions(reference: .init(kind: .deck, id: deck.id))
+                    Button("Start from beginning") { start([deck], resume: false) }.disabled(deck.cards.isEmpty)
+                    Button("Reset progress…") { resetProgress = true }
+                    Button("Study multiple decks…") { combinedIDs = [deck.id]; combining = true }
+                    Button("Import pasted text or CSV…") { importingText = true }
+                    Divider()
                     Button("Rename deck") { renaming = true; deckName = deck.name; deckEditor = true }
                     Button("Delete deck", role: .destructive) { deleteDeck = true }
                 } label: { Image(systemName: "ellipsis").padding(8) }.menuStyle(.borderlessButton).frame(width: 34)
             }
             HStack {
-                Button { session = StudySession(cards: deck.cards, shuffled: shuffled) } label: { Label("Start studying", systemImage: "play.fill").padding(.horizontal, 12).padding(.vertical, 4) }
+                Button { start([deck], resume: true) } label: { Label(workspace.state.progress[deck.id]?.lastCardID == nil ? "Start studying" : "Continue studying", systemImage: "play.fill").padding(.horizontal, 12).padding(.vertical, 4) }
                     .buttonStyle(PrimaryButtonStyle()).controlSize(.large).disabled(deck.cards.isEmpty).keyboardShortcut("r")
                 Toggle("Shuffle", isOn: $shuffled).toggleStyle(.checkbox).padding(.leading, 10)
                 Spacer()
                 Button { editingCard = nil; front = ""; back = ""; cardEditor = true } label: { Label("Add card", systemImage: "plus") }.controlSize(.large).keyboardShortcut("n", modifiers: [.command, .shift])
             }
             Divider()
+            if let progress = workspace.state.progress[deck.id] {
+                Text("\(progress.reviewedCardIDs.intersection(Set(deck.cards.map(\.id))).count) of \(deck.cards.count) reviewed").font(.caption).foregroundStyle(.secondary)
+            }
             HStack {
                 Text("CARDS").font(.system(size: 11, weight: .semibold)).tracking(2).foregroundStyle(.secondary)
                 Spacer()
@@ -237,8 +313,8 @@ struct ContentView: View {
                                     Text(card.front).font(.body.weight(.medium)).textSelection(.enabled)
                                     Text(card.back).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
                                 }.frame(maxWidth: .infinity, alignment: .leading)
-                                Button { editingCard = card.id; front = card.front; back = card.back; cardEditor = true } label: { Image(systemName: "pencil") }.buttonStyle(.borderless).help("Edit card")
-                                Button { deletingCard = card } label: { Image(systemName: "trash") }.buttonStyle(.borderless).foregroundStyle(.secondary).help("Delete card")
+                                Button { editingCard = card.id; front = card.front; back = card.back; cardEditor = true } label: { Image(systemName: "pencil") }.buttonStyle(.borderless).help("Edit card").accessibilityLabel("Edit card: \(card.front)")
+                                Button { deletingCard = card } label: { Image(systemName: "trash") }.buttonStyle(.borderless).foregroundStyle(.secondary).help("Delete card").accessibilityLabel("Delete card: \(card.front)")
                             }
                             .padding(20)
                             .background(theme.surface, in: RoundedRectangle(cornerRadius: 12))
@@ -252,13 +328,22 @@ struct ContentView: View {
     }
 
     private func sidebarButton(help: String) -> some View {
-        Button { withAnimation(.easeInOut(duration: 0.18)) { sidebarVisible.toggle() } } label: {
+        Button { withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { sidebarVisible.toggle() } } label: {
             Image(systemName: "sidebar.left").padding(6)
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
         .help(help)
         .accessibilityLabel(help)
+    }
+
+    private func start(_ decks: [Deck], resume: Bool) {
+        let cards = decks.flatMap(\.cards)
+        guard !cards.isEmpty else { library.error = "Add cards before starting a session."; return }
+        let sources = Dictionary(uniqueKeysWithValues: decks.flatMap { deck in deck.cards.map { ($0.id, deck.id) } })
+        let names = Dictionary(uniqueKeysWithValues: decks.map { ($0.id, $0.name) })
+        session = StudySession(cards: cards, shuffled: shuffled, sources: sources, sourceNames: names,
+                               resumeAt: resume && decks.count == 1 ? workspace.state.progress[decks[0].id]?.lastCardID : nil)
     }
 
     private var validCard: Bool { !front.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !back.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -288,6 +373,7 @@ struct LibraryDocument: FileDocument {
 
 struct PrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("theme") private var theme: StudyTheme = .graphite
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -295,5 +381,7 @@ struct PrimaryButtonStyle: ButtonStyle {
             .padding(.horizontal, 18).padding(.vertical, 10)
             .foregroundStyle(enabled ? theme.buttonInk : theme.ink.opacity(0.45))
             .background(enabled ? theme.accent.opacity(configuration.isPressed ? 0.80 : 1) : theme.ink.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.98 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }

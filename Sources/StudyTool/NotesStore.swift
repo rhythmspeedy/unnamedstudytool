@@ -25,11 +25,20 @@ final class NotesStore: ObservableObject {
     @Published private(set) var deleted: StudyNote?
     @Published var error: String?
     @Published var search = ""
-    private let url: URL
+    let url: URL
     private let defaults: UserDefaults
     private var pendingSave: Task<Void, Never>?
     private var savedData: Data?
     private(set) var saveFailed = false
+    private(set) var contentEpoch = UUID()
+
+    func acceptRestored(_ values: [StudyNote], data: Data) {
+        contentEpoch = UUID()
+        pendingSave?.cancel(); pendingSave = nil
+        notes = values; savedData = data; loaded = true; dirty = false; saveFailed = false
+        error = nil; deleted = nil; search = ""; selectedID = sortedNotes.first?.id
+        defaults.set(selectedID?.uuidString, forKey: "selectedNote")
+    }
 
     init(url: URL? = nil, defaults: UserDefaults = .standard) {
         self.url = url ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -62,7 +71,8 @@ final class NotesStore: ObservableObject {
     }
     var matchingNotes: [StudyNote] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return sortedNotes.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.body.localizedCaseInsensitiveContains(query) }
+        return notes.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.body.localizedCaseInsensitiveContains(query) }
+            .sorted { $0.modified == $1.modified ? $0.id.uuidString < $1.id.uuidString : $0.modified > $1.modified }
     }
     var status: String { !loaded ? "Unavailable" : saveFailed ? "Not saved" : dirty ? "Saving…" : "Saved" }
     var recoveryURL: URL { url.deletingPathExtension().appendingPathExtension("previous.json") }
@@ -155,6 +165,7 @@ final class NotesStore: ObservableObject {
                 try original.write(to: archive, options: .atomic)
             }
             try data.write(to: url, options: .atomic)
+            contentEpoch = UUID()
             notes = restored
             savedData = data
             loaded = true

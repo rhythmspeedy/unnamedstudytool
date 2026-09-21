@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct StudyView: View {
+    @EnvironmentObject private var hub: StudyHub
+    @EnvironmentObject private var router: StudyRouter
     @State private var session: StudySession
     @State private var revealed = false
     @State private var remaining = 30.0
@@ -52,7 +54,7 @@ struct StudyView: View {
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .tracking(2).foregroundStyle(.secondary)
                 Spacer()
-                Button("End session", action: close).keyboardShortcut(.cancelAction)
+                Button("End session", action: close)
             }
 
             ProgressView(value: Double(session.mastered), total: Double(max(session.total, 1)))
@@ -61,6 +63,9 @@ struct StudyView: View {
             if session.current != nil {
                 HStack {
                     Text("\(session.mastered) of \(session.total) completed")
+                    if let card = session.current, let source = session.sources[card.id], let name = session.sourceNames[source] {
+                        Text(name).lineLimit(1)
+                    }
                     Spacer()
                     if timerEnabled {
                         Text(remaining <= 0 ? "Time’s up" : revealed ? "Timer stopped" : "\(Int(ceil(remaining)))s")
@@ -114,6 +119,13 @@ struct StudyView: View {
 
                 Text("Space to flip · ← previous · → next · browse freely")
                     .font(.caption).foregroundStyle(.secondary)
+                if revealed {
+                    HStack(spacing: 14) {
+                        Button("Again · 1") { rate(.again) }.keyboardShortcut("1", modifiers: [])
+                        Button("Unsure · 2") { rate(.unsure) }.keyboardShortcut("2", modifiers: [])
+                        Button("Know · 3") { rate(.know) }.keyboardShortcut("3", modifiers: [])
+                    }.font(.caption)
+                }
             } else {
                 Spacer()
                 Image(systemName: "checkmark.circle")
@@ -134,18 +146,29 @@ struct StudyView: View {
             }
         }
         .padding(36)
+        .background {
+            if !router.focused { Button("End session", action: close).keyboardShortcut(.cancelAction).hidden().accessibilityHidden(true) }
+        }
+        .onExitCommand { if router.focused { router.focused = false } else { close() } }
     }
 
     private func next() {
         session.answer(known: true)
+        hub.studied(session)
         revealed = false
         resetTimer()
     }
 
     private func previous() {
         session.goBack()
+        hub.studied(session)
         revealed = false
         resetTimer()
+    }
+
+    private func rate(_ confidence: StudySession.Confidence) {
+        if let card = session.current { hub.rate(card, confidence: confidence) }
+        session.rate(confidence); hub.studied(session); revealed = false; resetTimer()
     }
 
     private func resetTimer() {

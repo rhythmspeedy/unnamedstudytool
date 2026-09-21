@@ -116,6 +116,7 @@ enum CheckFailure: Error { case failed(String) }
             clock.tick(now: start.addingTimeInterval(8000))
             clock.nextPhase(focus: 25, short: 5, long: 15)
         }
-        print("PASS: notes autosave, Unicode, long text, search, selection, delete/undo, recovery and save failures; flashcards, tasks and Pomodoro")
+        try RoadmapChecks.run(in: folder)
+        print("PASS: notes, flashcards, tasks, Pomodoro, workspace backup/merge/rollback, history, targets, pins, scheduling, confidence and resume")
     }
 }

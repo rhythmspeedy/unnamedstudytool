@@ -12,6 +12,7 @@ struct NoteEditor: NSViewRepresentable {
     let store: NotesStore
     let cache: NoteEditorCache
     let theme: StudyTheme
+    var createCard: (String) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, id: note.id) }
 
@@ -20,7 +21,7 @@ struct NoteEditor: NSViewRepresentable {
         if let existing = cache.views[note.id] {
             scroll = existing
         } else {
-            scroll = NSTextView.scrollableTextView()
+            scroll = CardCreatingTextView.scrollableTextView()
             guard let text = scroll.documentView as? NSTextView else { preconditionFailure("Expected a native text editor") }
             text.isRichText = false
             text.importsGraphics = false
@@ -41,6 +42,7 @@ struct NoteEditor: NSViewRepresentable {
             cache.views[note.id] = scroll
         }
         (scroll.documentView as? NSTextView)?.delegate = context.coordinator
+        (scroll.documentView as? CardCreatingTextView)?.createCard = createCard
         updateNSView(scroll, context: context)
         return scroll
     }
@@ -57,7 +59,7 @@ struct NoteEditor: NSViewRepresentable {
     static func dismantleNSView(_ view: NSScrollView, coordinator: Coordinator) {
         // Flush marked-text edits too, before detaching the native view.
         if let text = view.documentView as? NSTextView {
-            if coordinator.store.notes.contains(where: { $0.id == coordinator.id }) {
+            if coordinator.epoch == coordinator.store.contentEpoch, coordinator.store.notes.contains(where: { $0.id == coordinator.id }) {
                 coordinator.store.edit(id: coordinator.id, body: text.string)
                 coordinator.store.flush()
             }
@@ -68,22 +70,45 @@ struct NoteEditor: NSViewRepresentable {
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         let store: NotesStore
         let id: UUID
-        init(store: NotesStore, id: UUID) { self.store = store; self.id = id }
+        let epoch: UUID
+        init(store: NotesStore, id: UUID) { self.store = store; self.id = id; epoch = store.contentEpoch }
         func textDidChange(_ notification: Notification) {
             guard let text = notification.object as? NSTextView else { return }
+            guard epoch == store.contentEpoch else { return } // A replaced workspace invalidates old editor callbacks.
             store.edit(id: id, body: text.string)
         }
+    }
+}
+
+final class CardCreatingTextView: NSTextView {
+    var createCard: ((String) -> Void)?
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let menu = super.menu(for: event) else { return nil }
+        if selectedRange().length > 0 {
+            menu.addItem(.separator())
+            let item = NSMenuItem(title: "Create flashcard from selection…", action: #selector(makeCard), keyEquivalent: "")
+            item.target = self; menu.addItem(item)
+        }
+        return menu
+    }
+    @objc private func makeCard() {
+        let range = selectedRange()
+        guard range.length > 0, NSMaxRange(range) <= (string as NSString).length else { NSSound.beep(); return }
+        createCard?((string as NSString).substring(with: range))
     }
 }
 
 @MainActor
 final class StudyAppDelegate: NSObject, NSApplicationDelegate {
     var notes: NotesStore?
+    var workspace: WorkspaceStore?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let notes, notes.dirty, !notes.flush() else { return .terminateNow }
+        let notesSaved = notes?.dirty != true || notes?.flush() == true
+        let workspaceSaved = workspace?.dirty != true || workspace?.flush() == true
+        guard !notesSaved || !workspaceSaved else { return .terminateNow }
         let alert = NSAlert()
-        alert.messageText = "Your latest notes have not been saved"
-        alert.informativeText = "Keep the app open to retry saving or export a text copy. \(notes.error ?? "")"
+        alert.messageText = "Your latest changes have not been saved"
+        alert.informativeText = "Keep the app open to retry saving. \(notes?.error ?? workspace?.error ?? "")"
         alert.addButton(withTitle: "Keep editing")
         alert.runModal()
         return .terminateCancel

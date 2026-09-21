@@ -113,6 +113,8 @@ struct AppAppearance: ViewModifier {
 }
 
 struct StudySettingsView: View {
+    @EnvironmentObject private var workspace: WorkspaceStore
+    @AppStorage("menuBarTimer") private var menuBarTimer = false
     @State private var section = "General"
     @AppStorage("pomodoroFocus") private var pomodoroFocus = 25
     @AppStorage("pomodoroShort") private var pomodoroShort = 5
@@ -128,6 +130,7 @@ struct StudySettingsView: View {
                 Text("General").tag("General")
                 Text("Flashcards").tag("Flashcards")
                 Text("Pomodoro").tag("Pomodoro")
+                Text("Data").tag("Data")
             }.pickerStyle(.segmented).padding(22)
         Form {
             if section == "General" {
@@ -143,7 +146,14 @@ struct StudySettingsView: View {
             }
 
             Section("Your workspace") {
+                TargetSettingsView()
+                Toggle("Show Pomodoro in the menu bar", isOn: $menuBarTimer)
                 Text("Your lists and flashcards save on this Mac. The Pomodoro timer keeps running while you move between tools; quitting the app ends the timer run.").font(.callout).foregroundStyle(.secondary)
+            }
+            Section("About and updates") {
+                Text("unnamedstudytool \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")")
+                Link("Download updates…", destination: URL(string: "https://github.com/rhythmspeedy/unnamedstudytool/releases/latest")!)
+                Text("Opens the official GitHub releases page. Quit the app, then replace the app in Applications with the new download. Your study data is stored separately. The app never installs updates automatically.").font(.caption).foregroundStyle(.secondary)
             }
             }
             if section == "Flashcards" {
@@ -175,13 +185,19 @@ struct StudySettingsView: View {
                     Stepper("Long break: \(pomodoroLong) minutes", value: $pomodoroLong, in: 1...60)
                     Text("A long break follows every four completed focus intervals. Changes apply to the next interval or when you reset the current one.").font(.caption).foregroundStyle(.secondary)
                 }
+                Section("Focus sounds") { AmbientPicker() }
             }
+            if section == "Data" { DataSettingsView(); DailyBackupSettingsView(); DeletedFlashcardsSettingsView() }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .background(theme.background)
         }.frame(width: 560, height: 560).background(theme.background)
         .modifier(AppAppearance())
+        .alert("Workspace needs attention", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
+            if workspace.dirty { Button("Retry saving") { workspace.flush() } }
+            Button("OK") { workspace.error = nil }
+        } message: { Text(workspace.error ?? "") }
     }
 
     private func themeRow(_ themes: [StudyTheme]) -> some View {

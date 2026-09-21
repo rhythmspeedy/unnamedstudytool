@@ -1,9 +1,12 @@
 import SwiftUI
 
 struct TodoView: View {
+    @EnvironmentObject private var hub: StudyHub
+    @EnvironmentObject private var router: StudyRouter
+    @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var store: TodoStore
     @AppStorage("theme") private var theme: StudyTheme = .graphite
-    @State private var selected: UUID?
+    private var selected: UUID? { get { router.listID } nonmutating set { router.listID = newValue } }
     @State private var draft = ""
     @State private var showCompleted = false
     @State private var naming = false
@@ -11,6 +14,10 @@ struct TodoView: View {
     @State private var name = ""
     @State private var editing: TodoItem?
     @State private var editTitle = ""
+    @State private var scheduling: TodoItem?
+    @State private var linking: TodoItem?
+    @State private var dueEnabled = false
+    @State private var dueDate = Date()
     @State private var deleteList = false
     @State private var deleted: (listID: UUID, item: TodoItem, index: Int)?
     @FocusState private var inputFocused: Bool
@@ -26,6 +33,8 @@ struct TodoView: View {
                 }
                 Spacer()
                 Menu {
+                    if let list { ItemActions(reference: .init(kind: .todoList, id: list.id)) }
+                    Divider()
                     if store.lists.count > 1 {
                         ForEach(store.lists) { list in Button(list.name) { selected = list.id } }
                         Divider()
@@ -45,6 +54,7 @@ struct TodoView: View {
                 Toggle("Show completed", isOn: $showCompleted).toggleStyle(.checkbox).font(.caption)
             }
             if let list {
+                ScrollViewReader { scroll in
                 ScrollView {
                     LazyVStack(spacing: 8) {
                         ForEach(list.items.filter { showCompleted || !$0.done }) { item in
@@ -52,13 +62,26 @@ struct TodoView: View {
                                 Button { toggle(item) } label: {
                                     Image(systemName: item.done ? "checkmark.circle.fill" : "circle").font(.title2).foregroundStyle(item.done ? theme.accent : theme.ink.opacity(0.5))
                                 }.buttonStyle(.plain).accessibilityLabel(item.done ? "Mark \(item.title) incomplete" : "Complete \(item.title)")
-                                Text(item.title).strikethrough(item.done).foregroundStyle(item.done ? theme.ink.opacity(0.5) : theme.ink).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.title).strikethrough(item.done).foregroundStyle(item.done ? theme.ink.opacity(0.5) : theme.ink).textSelection(.enabled)
+                                    if let due = item.dueDay { Text("Due \(due.date.formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.secondary) }
+                                    else if let day = item.scheduledDay { Text(day <= CalendarDay() ? "Today" : day.date.formatted(date: .abbreviated, time: .omitted)).font(.caption).foregroundStyle(.secondary) }
+                                    TaskMaterialButtons(references: item.materials ?? [])
+                                }.frame(maxWidth: .infinity, alignment: .leading)
                                 Menu {
+                                    ItemActions(reference: .init(kind: .todoItem, id: item.id, parentID: list.id))
+                                    Divider()
+                                    Button("Study materials…") { linking = item }
+                                    Button("Today") { schedule(item, day: CalendarDay()) }
+                                    Button("Later") { schedule(item, day: nil) }
+                                    Button("Due date…") { scheduling = item; dueEnabled = item.dueDay != nil; dueDate = item.dueDay?.date ?? Date() }
                                     Button("Edit…") { editing = item; editTitle = item.title }
                                     Button("Move to top") { moveToTop(item) }
                                     Button("Delete", role: .destructive) { remove(item) }
-                                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 28)
+                                } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 28).accessibilityLabel("Options for \(item.title)")
                             }.padding(16).background(theme.surface, in: RoundedRectangle(cornerRadius: 10))
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(router.taskID == item.id ? theme.accent.opacity(0.5) : .clear))
+                                .id(item.id)
                         }
                     }
                     if list.items.filter({ showCompleted || !$0.done }).isEmpty {
@@ -69,6 +92,10 @@ struct TodoView: View {
                         }.padding(40).frame(maxWidth: .infinity)
                     }
                 }
+                .onChange(of: router.taskID, initial: true) { _, id in
+                    if let id { showCompleted = true; scroll.scrollTo(id, anchor: .center) }
+                }
+                }
             }
             if deleted != nil {
                 HStack {
@@ -78,7 +105,27 @@ struct TodoView: View {
                 }
             }
         }.padding(36).frame(maxWidth: 950, maxHeight: .infinity, alignment: .topLeading)
-            .onAppear { inputFocused = true }
+            .onAppear { if selected == nil { selected = store.lists.first?.id }; inputFocused = router.taskID == nil }
+            .onChange(of: selected) { _, id in if let id { workspace.opened(.init(kind: .todoList, id: id)) } }
+            .sheet(item: $scheduling) { item in
+                VStack(alignment: .leading, spacing: 18) {
+                    Text("Due date").font(.title2)
+                    Toggle("Set a due date", isOn: $dueEnabled)
+                    DatePicker("Date", selection: $dueDate, displayedComponents: .date).disabled(!dueEnabled)
+                    HStack {
+                        Button("Cancel") { scheduling = nil }.keyboardShortcut(.cancelAction)
+                        Spacer()
+                        Button("Save") {
+                            guard var list, let index = list.items.firstIndex(where: { $0.id == item.id }) else { store.error = "This task is no longer available."; return }
+                            list.items[index].dueDay = dueEnabled ? CalendarDay(dueDate) : nil
+                            if store.update(list) { scheduling = nil }
+                        }.keyboardShortcut(.defaultAction)
+                    }
+                }.padding(26).frame(width: 360)
+            }
+            .sheet(item: $linking) { item in
+                if let list { MaterialLinksView(taskID: item.id, listID: list.id) }
+            }
             .sheet(isPresented: $naming) {
                 VStack(alignment: .leading, spacing: 18) {
                     Text(rename ? "Rename list" : "New list").font(.title2)
@@ -108,6 +155,10 @@ struct TodoView: View {
         guard !trimmedDraft.isEmpty, var list else { return }
         list.items.append(TodoItem(title: trimmedDraft))
         if store.update(list) { draft = ""; inputFocused = true }
+    }
+    private func schedule(_ item: TodoItem, day: CalendarDay?) {
+        guard var list, let index = list.items.firstIndex(where: { $0.id == item.id }) else { store.error = "This task is no longer available."; return }
+        list.items[index].scheduledDay = day; store.update(list)
     }
     private func toggle(_ item: TodoItem) {
         guard var list, let index = list.items.firstIndex(where: { $0.id == item.id }) else { return }
