@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 @main struct IntegrationChecks {
     @MainActor static func main() throws {
@@ -47,6 +48,19 @@ import SwiftUI
             try check(contrast(theme.buttonInk, theme.accent) >= 4.5, "\(theme.title) button contrast")
             try check(contrast(theme.accent, theme.surface) >= 4.5, "\(theme.title) accent text contrast")
         }
-        print("PASS: app-level review/recovery/backups and all 20 theme text/button palettes")
+        try check(Set(AmbientSound.allCases.map(\.title)).count == AmbientSound.allCases.count, "Ambient titles are unique")
+        try check(AmbientSound.Category.allCases.allSatisfy { category in AmbientSound.allCases.contains { $0.category == category } }, "Every ambient category has a sound")
+        var generated = Set<Data>()
+        for sound in AmbientSound.allCases {
+            let data = AmbientAudioController.wave(sound)
+            try check(data.count == 44 + 22_050 * 24 * 2, "\(sound.title) has the expected duration")
+            try check(String(decoding: data.prefix(4), as: UTF8.self) == "RIFF" && String(decoding: data[8..<12], as: UTF8.self) == "WAVE", "\(sound.title) is a WAV file")
+            if sound != .silence { try check(data.dropFirst(44).contains { $0 != 0 }, "\(sound.title) contains audible samples") }
+            let player = try AVAudioPlayer(data: data, fileTypeHint: AVFileType.wav.rawValue)
+            try check(player.prepareToPlay() && abs(player.duration - 24) < 0.01, "\(sound.title) decodes as 24-second audio")
+            generated.insert(data)
+        }
+        try check(generated.count == AmbientSound.allCases.count, "Every ambient choice generates a distinct texture")
+        print("PASS: app-level review/recovery/backups, 20 theme palettes, and \(AmbientSound.allCases.count) ambient textures")
     }
 }

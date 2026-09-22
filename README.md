@@ -69,6 +69,17 @@ Changes save automatically to `~/Library/Application Support/unnamedstudytool/li
 
 Old app versions do not understand new review, link, and recovery metadata and may discard it when saving. Keep a full backup before downgrading.
 
+## New in 1.3
+
+Focus sounds now offer fifteen choices organized into four compact groups:
+
+- **Quiet:** Silence.
+- **Noise colors:** White noise, Pink noise, and Brown noise.
+- **Weather & nature:** Rain, Forest rain, Deep ocean, Distant thunder, and Fireplace.
+- **Places & motion:** Room tone, Desk fan, Quiet café, Library room, Night train, and Airplane cabin.
+
+Every texture is synthesized locally on demand, cached for fast replay during the current run, and crossfaded into a continuous loop. No recorded audio, third-party license, attribution, download, or network request is involved. Atmospheric events are deliberately subdued so voices, page turns, rail sounds, crackles, and thunder do not compete with studying. Silence remains the default.
+
 ## Build and test
 
 With Apple's Swift tools installed:

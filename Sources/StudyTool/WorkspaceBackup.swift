@@ -36,7 +36,7 @@ struct ExportedSettings: Codable {
 struct WorkspaceBackup: Codable {
     var formatVersion = 1
     var exportedAt = Date()
-    var appVersion = "1.2"
+    var appVersion = "1.3"
     var decks: [Deck]
     var todoLists: [TodoList]
     var notes: [StudyNote]

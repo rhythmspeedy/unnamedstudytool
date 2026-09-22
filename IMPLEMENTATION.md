@@ -1,5 +1,9 @@
 # Study workspace implementation — 1.1
 
+## Focus sound expansion — 1.3
+
+Done: white and pink noise, deep ocean, forest rain, fireplace, quiet café, night train, library room, desk fan, distant thunder, and airplane cabin. Together with Silence, Rain, Brown noise, and Room tone, the picker now has fifteen categorized choices. All audio is generated locally from deterministic filters, oscillators, envelopes, and noise; no recording licenses or downloads are required. Generated WAV data is cached in memory after first use and looped with a crossfaded boundary.
+
 ## Follow-up release — 1.2
 
 Done: optional scheduled reviews, task-to-note/deck links, 30-day flashcard recovery, fourteen daily local snapshots, paste/CSV import preview, full-backup comparison previews, accessibility labels/reduced motion, note-search and destination-lookup efficiency improvements, and manual update access. New optional metadata decodes from existing saves and is remapped when backups merge.
