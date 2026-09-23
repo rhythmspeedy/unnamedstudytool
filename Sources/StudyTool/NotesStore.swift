@@ -1,19 +1,59 @@
 import Foundation
 
+struct StudyNotePage: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var title = ""
+    var body = ""
+
+    var displayTitle: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Untitled page" : trimmed
+    }
+}
+
 struct StudyNote: Identifiable, Codable, Equatable {
     var id = UUID()
     var title = ""
     var body = ""
+    var pages: [StudyNotePage] = []
     var modified = Date()
     var displayTitle: String {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Untitled note" : trimmed
     }
     var preview: String {
-        let text = body.prefix(180).split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        let source = ([body] + pages.map(\.body)).first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? ""
+        let text = source.prefix(180).split(whereSeparator: \.isWhitespace).joined(separator: " ")
         return text.isEmpty ? "No text yet" : text
     }
-    var exportText: String { title.isEmpty ? body : "\(title)\n\n\(body)" }
+    var exportText: String {
+        ([StudyNotePage(id: id, title: title, body: body)] + pages).map { page in
+            page.title.isEmpty ? page.body : "\(page.title)\n\n\(page.body)"
+        }.joined(separator: "\n\n\u{2500}\u{2500}\u{2500}\n\n")
+    }
+    var searchableText: String {
+        ([title, body] + pages.flatMap { [$0.title, $0.body] }).joined(separator: "\n")
+    }
+    var editorIDs: [UUID] { [id] + pages.map(\.id) }
+
+    private enum CodingKeys: String, CodingKey { case id, title, body, pages, modified }
+
+    init(id: UUID = UUID(), title: String = "", body: String = "", pages: [StudyNotePage] = [], modified: Date = Date()) {
+        self.id = id
+        self.title = title
+        self.body = body
+        self.pages = pages
+        self.modified = modified
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        title = try values.decode(String.self, forKey: .title)
+        body = try values.decode(String.self, forKey: .body)
+        pages = try values.decodeIfPresent([StudyNotePage].self, forKey: .pages) ?? []
+        modified = try values.decode(Date.self, forKey: .modified)
+    }
 }
 
 @MainActor
@@ -60,7 +100,10 @@ final class NotesStore: ObservableObject {
 
     private static func decode(_ data: Data) throws -> [StudyNote] {
         let notes = try JSONDecoder().decode([StudyNote].self, from: data)
-        guard Set(notes.map(\.id)).count == notes.count else {
+        let noteIDs = notes.map(\.id)
+        let pageIDs = notes.flatMap { $0.pages.map(\.id) }
+        guard Set(noteIDs).count == noteIDs.count,
+              Set(noteIDs + pageIDs).count == noteIDs.count + pageIDs.count else {
             throw CocoaError(.fileReadCorruptFile)
         }
         return notes
@@ -71,7 +114,7 @@ final class NotesStore: ObservableObject {
     }
     var matchingNotes: [StudyNote] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return notes.filter { query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) || $0.body.localizedCaseInsensitiveContains(query) }
+        return notes.filter { query.isEmpty || $0.searchableText.localizedCaseInsensitiveContains(query) }
             .sorted { $0.modified == $1.modified ? $0.id.uuidString < $1.id.uuidString : $0.modified > $1.modified }
     }
     var status: String { !loaded ? "Unavailable" : saveFailed ? "Not saved" : dirty ? "Saving…" : "Saved" }
@@ -105,6 +148,54 @@ final class NotesStore: ObservableObject {
         if let body { notes[index].body = body }
         notes[index].modified = Date()
         dirty = true
+        scheduleSave()
+    }
+
+    @discardableResult func addPage(to noteID: UUID) -> UUID? {
+        guard flush(), loaded, let index = notes.firstIndex(where: { $0.id == noteID }) else {
+            error = "This note is unavailable, so a new page could not be added."
+            return nil
+        }
+        let page = StudyNotePage()
+        notes[index].pages.append(page)
+        notes[index].modified = Date()
+        dirty = true
+        guard flush() else { return nil }
+        return page.id
+    }
+
+    func editPage(noteID: UUID, pageID: UUID, title: String? = nil, body: String? = nil) {
+        guard loaded,
+              let noteIndex = notes.firstIndex(where: { $0.id == noteID }),
+              let pageIndex = notes[noteIndex].pages.firstIndex(where: { $0.id == pageID }) else {
+            error = "This page is unavailable. Your text has not been saved."
+            return
+        }
+        let page = notes[noteIndex].pages[pageIndex]
+        guard title.map({ $0 != page.title }) == true || body.map({ $0 != page.body }) == true else { return }
+        if let title { notes[noteIndex].pages[pageIndex].title = title }
+        if let body { notes[noteIndex].pages[pageIndex].body = body }
+        notes[noteIndex].modified = Date()
+        dirty = true
+        scheduleSave()
+    }
+
+    @discardableResult func deletePage(noteID: UUID, pageID: UUID) -> Bool {
+        guard flush(), loaded, let noteIndex = notes.firstIndex(where: { $0.id == noteID }) else {
+            error = "This note is unavailable, so the page could not be deleted."
+            return false
+        }
+        guard notes[noteIndex].pages.contains(where: { $0.id == pageID }) else {
+            error = "This page is no longer available."
+            return false
+        }
+        notes[noteIndex].pages.removeAll { $0.id == pageID }
+        notes[noteIndex].modified = Date()
+        dirty = true
+        return flush()
+    }
+
+    private func scheduleSave() {
         pendingSave?.cancel()
         pendingSave = Task { [weak self] in
             do { try await Task.sleep(for: .milliseconds(600)) }

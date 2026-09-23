@@ -8,17 +8,21 @@ final class NoteEditorCache: ObservableObject {
 }
 
 struct NoteEditor: NSViewRepresentable {
-    let note: StudyNote
+    let noteID: UUID
+    let pageID: UUID?
+    let body: String
     let store: NotesStore
     let cache: NoteEditorCache
     let theme: StudyTheme
     var createCard: (String) -> Void = { _ in }
 
-    func makeCoordinator() -> Coordinator { Coordinator(store: store, id: note.id) }
+    private var cacheID: UUID { pageID ?? noteID }
+
+    func makeCoordinator() -> Coordinator { Coordinator(store: store, noteID: noteID, pageID: pageID) }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll: NSScrollView
-        if let existing = cache.views[note.id] {
+        if let existing = cache.views[cacheID] {
             scroll = existing
         } else {
             scroll = CardCreatingTextView.scrollableTextView()
@@ -29,17 +33,17 @@ struct NoteEditor: NSViewRepresentable {
             text.isAutomaticLinkDetectionEnabled = false
             text.isAutomaticTextReplacementEnabled = false
             text.font = .systemFont(ofSize: 16)
-            text.textContainerInset = NSSize(width: 20, height: 22)
+            text.textContainerInset = NSSize(width: 14, height: 16)
             text.defaultParagraphStyle = {
                 let style = NSMutableParagraphStyle()
                 style.lineSpacing = 5
                 return style
             }()
-            text.string = note.body
-            text.setAccessibilityLabel("Note body")
+            text.string = body
+            text.setAccessibilityLabel(pageID == nil ? "First page body" : "Page body")
             scroll.hasVerticalScroller = true
             scroll.hasHorizontalScroller = false
-            cache.views[note.id] = scroll
+            cache.views[cacheID] = scroll
         }
         (scroll.documentView as? NSTextView)?.delegate = context.coordinator
         (scroll.documentView as? CardCreatingTextView)?.createCard = createCard
@@ -49,7 +53,7 @@ struct NoteEditor: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let text = scroll.documentView as? NSTextView else { return }
-        if text.string != note.body { text.string = note.body }
+        if text.string != body { text.string = body }
         text.backgroundColor = NSColor(theme.background)
         text.textColor = NSColor(theme.ink)
         text.insertionPointColor = NSColor(theme.accent)
@@ -59,8 +63,8 @@ struct NoteEditor: NSViewRepresentable {
     static func dismantleNSView(_ view: NSScrollView, coordinator: Coordinator) {
         // Flush marked-text edits too, before detaching the native view.
         if let text = view.documentView as? NSTextView {
-            if coordinator.epoch == coordinator.store.contentEpoch, coordinator.store.notes.contains(where: { $0.id == coordinator.id }) {
-                coordinator.store.edit(id: coordinator.id, body: text.string)
+            if coordinator.isCurrent {
+                coordinator.save(text.string)
                 coordinator.store.flush()
             }
             text.delegate = nil
@@ -69,13 +73,24 @@ struct NoteEditor: NSViewRepresentable {
 
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         let store: NotesStore
-        let id: UUID
+        let noteID: UUID
+        let pageID: UUID?
         let epoch: UUID
-        init(store: NotesStore, id: UUID) { self.store = store; self.id = id; epoch = store.contentEpoch }
+        init(store: NotesStore, noteID: UUID, pageID: UUID?) {
+            self.store = store; self.noteID = noteID; self.pageID = pageID; epoch = store.contentEpoch
+        }
+        var isCurrent: Bool {
+            guard epoch == store.contentEpoch, let note = store.notes.first(where: { $0.id == noteID }) else { return false }
+            return pageID.map { id in note.pages.contains(where: { $0.id == id }) } ?? true
+        }
+        func save(_ body: String) {
+            if let pageID { store.editPage(noteID: noteID, pageID: pageID, body: body) }
+            else { store.edit(id: noteID, body: body) }
+        }
         func textDidChange(_ notification: Notification) {
             guard let text = notification.object as? NSTextView else { return }
-            guard epoch == store.contentEpoch else { return } // A replaced workspace invalidates old editor callbacks.
-            store.edit(id: id, body: text.string)
+            guard isCurrent else { return } // A replaced workspace or deleted page invalidates old editor callbacks.
+            save(text.string)
         }
     }
 }

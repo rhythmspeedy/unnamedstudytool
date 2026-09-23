@@ -42,7 +42,7 @@ Shortcuts: **⌘N** new deck, **⇧⌘N** add card, **⌘R** study, **Space** fl
 
 ## Notes
 
-Open Notes from Home or the top navigation. Create a note with **⌘N**, type a title and plain-text body, and use **⌘F** to search titles and contents. Notes appear most recently edited first. Standard Mac editing shortcuts work in the editor. The selected note, editor scroll position, and undo history remain available when switching tools; Pomodoro continues running.
+Open Notes from Home or the top navigation. Create a note with **⌘N**, type a title and plain-text body, and use **⌘F** to search titles and contents. Use **New page** or **⇧⌘N** to append another titled writing section to the same note; search and text export include every page. Notes appear most recently edited first. Standard Mac editing shortcuts work in the editor. The selected note, editor scroll position, and undo history remain available when switching tools; Pomodoro continues running.
 
 Edits save after a short pause and before switching notes or tools. The small status label shows saving progress. Failed saves preserve the draft in memory and offer retry or text export. The options menu exports a `.txt` file or deletes the note; **Undo delete** restores the most recently deleted note during the app session.
 

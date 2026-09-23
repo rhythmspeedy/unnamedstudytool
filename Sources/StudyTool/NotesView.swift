@@ -9,12 +9,14 @@ struct NotesView: View {
     @EnvironmentObject private var editors: NoteEditorCache
     @AppStorage("theme") private var theme: StudyTheme = .graphite
     @FocusState private var focus: Field?
-    private enum Field { case search, title }
+    private enum Field: Hashable { case search, noteTitle, pageTitle(UUID) }
     @State private var exporting = false
     @State private var document = NoteTextDocument(text: "")
     @State private var exportName = "Note"
     @State private var exportError: String?
     @State private var confirmRecovery = false
+    @State private var pendingPageID: UUID?
+    @State private var pageToDelete: StudyNotePage?
 
     var body: some View {
         let matches = store.matchingNotes
@@ -66,18 +68,21 @@ struct NotesView: View {
 
             Group {
                 if let note = store.selected {
-                    VStack(spacing: 12) {
+                    VStack(spacing: 14) {
                         HStack {
                             Text(store.status).font(.caption).foregroundStyle(store.saveFailed ? theme.accent : theme.ink.opacity(0.6)).accessibilityLabel("Note status: \(store.status)")
                             if store.saveFailed { Button("Retry save") { store.flush() } }
                             Spacer()
+                            Button { addPage(to: note.id) } label: { Label("New page", systemImage: "plus") }
+                                .buttonStyle(.bordered).keyboardShortcut("n", modifiers: [.command, .shift])
+                                .help("Add a page to this note (Shift-Command-N)")
                             Menu {
                                 ItemActions(reference: .init(kind: .note, id: note.id))
                                 Button("Create flashcard from selection…") {
-                                    guard let text = editors.views[note.id]?.documentView as? NSTextView, text.selectedRange().length > 0 else {
+                                    guard let text = selectedText(in: note) else {
                                         store.error = "Select some text in the note first."; return
                                     }
-                                    hub.captureCard(from: (text.string as NSString).substring(with: text.selectedRange()))
+                                    hub.captureCard(from: text)
                                 }
                                 Divider()
                                 Button("Export as text…") { export(note) }
@@ -85,12 +90,44 @@ struct NotesView: View {
                                 Button("Delete note", role: .destructive) { store.deleteSelected() }
                             } label: { Image(systemName: "ellipsis").padding(6) }.menuStyle(.borderlessButton).frame(width: 30).help("Note options").accessibilityLabel("Note options")
                         }.padding(.horizontal, 22)
-                        TextField("Untitled note", text: Binding(get: { store.selected?.title ?? "" }, set: { store.edit(id: note.id, title: $0) }))
-                            .font(.system(size: 30, weight: .medium, design: .serif)).textFieldStyle(.plain)
-                            .focused($focus, equals: .title).accessibilityLabel("Note title").padding(.horizontal, 22)
-                        Divider().padding(.horizontal, 22)
-                        NoteEditor(note: note, store: store, cache: editors, theme: theme, createCard: { hub.captureCard(from: $0) }).id(note.id)
-                    }.padding(.top, 22).padding(.horizontal, 12).frame(maxWidth: 820, maxHeight: .infinity)
+                        GeometryReader { geometry in
+                            ScrollViewReader { reader in
+                                ScrollView {
+                                    VStack(spacing: 16) {
+                                        notePage(
+                                            number: 1,
+                                            noteID: note.id,
+                                            pageID: nil,
+                                            title: note.title,
+                                            body: note.body,
+                                            editorHeight: max(380, geometry.size.height - 112)
+                                        )
+                                        ForEach(Array(note.pages.enumerated()), id: \.element.id) { index, page in
+                                            notePage(
+                                                number: index + 2,
+                                                noteID: note.id,
+                                                pageID: page.id,
+                                                title: page.title,
+                                                body: page.body,
+                                                editorHeight: max(380, geometry.size.height - 112),
+                                                canDelete: true
+                                            )
+                                            .id(page.id)
+                                        }
+                                    }
+                                    .padding(.horizontal, 4).padding(.bottom, 12)
+                                }
+                                .onChange(of: pendingPageID) { _, pageID in
+                                    guard let pageID else { return }
+                                    withAnimation(.easeOut(duration: 0.22)) { reader.scrollTo(pageID, anchor: .top) }
+                                    DispatchQueue.main.async {
+                                        focus = .pageTitle(pageID)
+                                        pendingPageID = nil
+                                    }
+                                }
+                            }
+                        }
+                    }.padding(.top, 16).padding(.horizontal, 8).frame(maxWidth: .infinity, maxHeight: .infinity)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if !store.loaded {
                     ContentUnavailableView {
@@ -125,9 +162,65 @@ struct NotesView: View {
             Button("Restore") { editors.views.removeAll(); store.restorePreviousSave() }
             Button("Cancel", role: .cancel) {}
         } message: { Text("Notes will return to their previous saved state. The current file will also be kept as a separate recovery archive.") }
+        .alert("Delete this page?", isPresented: Binding(get: { pageToDelete != nil }, set: { if !$0 { pageToDelete = nil } })) {
+            Button("Delete page", role: .destructive) {
+                guard let noteID = store.selectedID, let page = pageToDelete else { return }
+                if store.deletePage(noteID: noteID, pageID: page.id) { editors.views.removeValue(forKey: page.id) }
+                pageToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { pageToDelete = nil }
+        } message: { Text("The page and its writing will be removed from this note.") }
     }
 
-    private func newNote() { if store.create() != nil { focus = .title } }
+    @ViewBuilder
+    private func notePage(number: Int, noteID: UUID, pageID: UUID?, title: String, body: String, editorHeight: CGFloat, canDelete: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text("PAGE \(number)").font(.caption2.weight(.semibold)).tracking(1.3).foregroundStyle(theme.ink.opacity(0.48))
+                Spacer()
+                if canDelete, let pageID, let page = store.selected?.pages.first(where: { $0.id == pageID }) {
+                    Menu {
+                        Button("Delete page…", role: .destructive) { pageToDelete = page }
+                    } label: { Image(systemName: "ellipsis").frame(width: 24, height: 20) }
+                    .menuStyle(.borderlessButton).frame(width: 26).help("Page options").accessibilityLabel("Page \(number) options")
+                }
+            }
+            TextField(number == 1 ? "Untitled note" : "Untitled page", text: Binding(
+                get: {
+                    if let pageID { return store.selected?.pages.first(where: { $0.id == pageID })?.title ?? "" }
+                    return store.selected?.title ?? ""
+                },
+                set: { value in
+                    if let pageID { store.editPage(noteID: noteID, pageID: pageID, title: value) }
+                    else { store.edit(id: noteID, title: value) }
+                }
+            ))
+            .font(.system(size: number == 1 ? 30 : 25, weight: .medium, design: .serif)).textFieldStyle(.plain)
+            .focused($focus, equals: pageID.map(Field.pageTitle) ?? .noteTitle)
+            .accessibilityLabel(number == 1 ? "Note title" : "Page \(number) title")
+            Divider()
+            NoteEditor(noteID: noteID, pageID: pageID, body: body, store: store, cache: editors, theme: theme, createCard: { hub.captureCard(from: $0) })
+                .id(pageID ?? noteID).frame(maxWidth: .infinity).frame(height: editorHeight)
+        }
+        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(theme.ink.opacity(0.07), lineWidth: 0.75))
+    }
+
+    private func newNote() { if store.create() != nil { focus = .noteTitle } }
+    private func addPage(to noteID: UUID) {
+        if let pageID = store.addPage(to: noteID) { pendingPageID = pageID }
+    }
+    private func selectedText(in note: StudyNote) -> String? {
+        for id in note.editorIDs {
+            guard let text = editors.views[id]?.documentView as? NSTextView else { continue }
+            let range = text.selectedRange()
+            guard range.length > 0, NSMaxRange(range) <= (text.string as NSString).length else { continue }
+            return (text.string as NSString).substring(with: range)
+        }
+        return nil
+    }
     private func export(_ note: StudyNote) {
         document = NoteTextDocument(text: note.exportText)
         exportName = String(note.displayTitle.prefix(80)).components(separatedBy: CharacterSet(charactersIn: "/:\n\r")).joined(separator: "-")

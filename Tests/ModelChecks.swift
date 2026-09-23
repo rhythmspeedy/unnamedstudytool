@@ -68,6 +68,14 @@ enum CheckFailure: Error { case failed(String) }
         try check(NotesStore(url: notesURL, defaults: defaults).selected?.body == "Cellular respiration\n日本語 🪴", "Unicode and selection must survive reopening")
         notes.search = "RESPIRATION"
         try check(notes.matchingNotes.count == 1, "Search must include note contents")
+        let page = notes.addPage(to: first)!
+        notes.editPage(noteID: first, pageID: page, title: "Cell division", body: "Mitosis and meiosis")
+        try check(notes.flush(), "Additional note pages must save")
+        let pagedNote = NotesStore(url: notesURL, defaults: defaults).selected!
+        try check(pagedNote.pages.first?.title == "Cell division" && pagedNote.pages.first?.body == "Mitosis and meiosis", "Additional note pages must survive reopening")
+        notes.search = "MEIOSIS"
+        try check(notes.matchingNotes.map(\.id) == [first], "Search must include additional page titles and contents")
+        try check(pagedNote.exportText.contains("Cell division") && pagedNote.exportText.contains("Mitosis and meiosis"), "Text export must include every page")
         let second = notes.create()!
         notes.edit(id: second, title: "Long note", body: String(repeating: "A long line of notes.\n", count: 10000))
         try check(notes.select(first), "Switching notes must flush pending edits")

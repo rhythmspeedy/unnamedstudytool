@@ -116,10 +116,31 @@ struct PomodoroView: View {
     @EnvironmentObject private var hub: StudyHub
     @EnvironmentObject private var workspace: WorkspaceStore
     @EnvironmentObject private var timer: PomodoroStore
+    @EnvironmentObject private var audio: AmbientAudioController
     @AppStorage("theme") private var theme: StudyTheme = .graphite
+    @AppStorage("ambientSound") private var ambientSound: AmbientSound = .silence
     @State private var confirmReset = false
     var body: some View {
-        ScrollView {
+        GeometryReader { geometry in
+            ScrollView {
+                HStack(alignment: .top, spacing: 32) {
+                    timerPanel.frame(maxWidth: 610)
+                    if geometry.size.width >= 900 {
+                        focusContext.frame(width: 286)
+                    }
+                }
+                .padding(geometry.size.width >= 900 ? 38 : 30)
+                .frame(maxWidth: 1040)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .alert("Reset this interval?", isPresented: $confirmReset) {
+            Button("Reset", role: .destructive) { timer.reset() }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("This restarts the current interval’s countdown. Completed focus intervals are kept.") }
+    }
+
+    private var timerPanel: some View {
         VStack(spacing: 24) {
             Text("POMODORO").font(.system(size: 11, design: .monospaced)).tracking(3).foregroundStyle(.secondary)
             IntentionPicker()
@@ -137,12 +158,85 @@ struct PomodoroView: View {
                 .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).lineSpacing(5)
             SettingsLink { Label("Timer settings", systemImage: "gearshape") }
             DisclosureGroup("Focus sounds") { AmbientPicker().padding(.top, 12) }.frame(maxWidth: 500)
-        }.padding(40).frame(maxWidth: .infinity)
         }
-            .alert("Reset this interval?", isPresented: $confirmReset) {
-                Button("Reset", role: .destructive) { timer.reset() }
-                Button("Cancel", role: .cancel) {}
-            } message: { Text("This restarts the current interval’s countdown. Completed focus intervals are kept.") }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var focusContext: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("SESSION").font(.caption2.weight(.semibold)).tracking(1.4).foregroundStyle(.secondary)
+            HStack(spacing: 9) {
+                ForEach(0..<4, id: \.self) { index in
+                    Circle().fill(index < cycleProgress ? theme.accent : theme.ink.opacity(0.12)).frame(width: 9, height: 9)
+                }
+                Spacer()
+                Text("\(cycleProgress) of 4").font(.caption).foregroundStyle(.secondary)
+            }
+            if let intention = workspace.state.intention {
+                Divider()
+                Text("CURRENT INTENTION").font(.caption2.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary)
+                Text(intention.labelSnapshot).font(.callout.weight(.medium)).lineLimit(3)
+                if hub.resolve(intention.reference) != nil {
+                    Button("Open material") { hub.run(.open(intention.reference)) }.font(.caption)
+                }
+            }
+            Divider()
+            if timer.clock.phase == .focus {
+                Text("UP NEXT").font(.caption2.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary)
+                if upcomingTasks.isEmpty {
+                    Text("No open tasks. A clear desk is a good place to focus.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(Array(upcomingTasks.prefix(3).enumerated()), id: \.element.1.id) { _, entry in
+                        Button { hub.run(.open(.init(kind: .todoItem, id: entry.1.id, parentID: entry.0.id))) } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Image(systemName: "circle").font(.caption2)
+                                Text(entry.1.title).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }.buttonStyle(.plain).font(.caption)
+                    }
+                }
+            } else {
+                Text("TAKE A REAL BREAK").font(.caption2.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary)
+                Label("Look away from the screen", systemImage: "eye").font(.caption)
+                Label("Stand, stretch, or get water", systemImage: "figure.cooldown").font(.caption)
+                Text("Nothing to complete here—just reset.").font(.caption).foregroundStyle(.secondary)
+            }
+            Divider()
+            Text("SOUND").font(.caption2.weight(.semibold)).tracking(1.2).foregroundStyle(.secondary)
+            HStack {
+                Label(ambientSound.title, systemImage: ambientSound.icon).font(.caption).lineLimit(1)
+                Spacer()
+                if ambientSound != .silence {
+                    Button(audio.playing || audio.preparing ? "Stop" : "Play") {
+                        if audio.playing || audio.preparing { audio.stop() } else { audio.play() }
+                    }.font(.caption)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(18)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(theme.surface.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(theme.ink.opacity(0.07)))
+    }
+
+    private var cycleProgress: Int {
+        let progress = timer.clock.completed % 4
+        return progress == 0 && timer.clock.completed > 0 && (timer.clock.awaitingNext || timer.clock.phase == .longBreak) ? 4 : progress
+    }
+
+    private var upcomingTasks: [(TodoList, TodoItem)] {
+        hub.todos.lists.flatMap { list in list.items.filter { !$0.done }.map { (list, $0) } }
+            .sorted { left, right in
+                let leftDay = left.1.dueDay ?? left.1.scheduledDay
+                let rightDay = right.1.dueDay ?? right.1.scheduledDay
+                switch (leftDay, rightDay) {
+                case let (a?, b?): return a == b ? left.1.title < right.1.title : a < b
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil): return false
+                }
+            }
     }
 }
 

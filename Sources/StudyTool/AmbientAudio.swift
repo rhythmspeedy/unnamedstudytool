@@ -75,7 +75,7 @@ enum AmbientSound: String, CaseIterable, Identifiable {
         case .fireplace: "Warm room tone with restrained crackling."
         case .roomTone: "A nearly still indoor air texture."
         case .deskFan: "Consistent airflow and a quiet rotating hum."
-        case .quietCafe: "Soft, indistinct murmur with no intelligible voices."
+        case .quietCafe: "Layered, indistinct conversation with a soft room hush."
         case .libraryRoom: "Subtle room air, pencil texture, and page turns."
         case .nightTrain: "Low rail rhythm and a muted carriage hum."
         case .airplaneCabin: "Smooth engine and cabin airflow."
@@ -163,6 +163,22 @@ enum AmbientSound: String, CaseIterable, Identifiable {
             seed = seed &* 6364136223846793005 &+ 1442695040888963407
             return Double(seed >> 32) / Double(UInt32.max) * 2 - 1
         }
+        func distantVoice(_ time: Double, pitch: Double, phraseRate: Double, syllableRate: Double, phase: Double) -> Double {
+            // Several softly gated harmonic voices suggest conversation without forming words.
+            let phraseWave = sin(time * 2 * .pi * phraseRate + phase + sin(time * 0.19 + phase) * 0.5)
+            let phrase = pow(max(0, phraseWave + 0.28) / 1.28, 1.35)
+            let syllableWave = sin(time * 2 * .pi * syllableRate + phase + sin(time * 0.73 + phase) * 0.65)
+            let syllable = 0.32 + 0.68 * pow(max(0, syllableWave + 0.18) / 1.18, 0.7)
+            let intonation = 1 + 0.035 * sin(time * 2 * .pi * (phraseRate * 0.47) + phase)
+            let fundamental = pitch * intonation
+            let voiced = sin(time * 2 * .pi * fundamental + phase)
+                + 0.48 * sin(time * 2 * .pi * fundamental * 2.02 + phase * 0.7)
+                + 0.22 * sin(time * 2 * .pi * fundamental * 3.01 + phase * 1.3)
+            let vowelColor = 0.32 * sin(time * 2 * .pi * (520 + pitch * 0.22) + phase)
+                + 0.18 * sin(time * 2 * .pi * (930 + pitch * 0.31) + phase * 0.4)
+                + 0.08 * sin(time * 2 * .pi * (1_650 + pitch * 0.17) + phase * 1.7)
+            return phrase * syllable * (voiced * 0.15 + vowelColor * 0.12)
+        }
         for index in 0..<(count + fade) {
             let white = noise(), impulse = noise()
             low = 0.992 * low + 0.008 * white
@@ -201,9 +217,12 @@ enum AmbientSound: String, CaseIterable, Identifiable {
                 let rotation = 0.88 + 0.12 * sin(t * 2 * .pi * 1.15)
                 sample = softer * 0.28 * rotation + sin(t * 2 * .pi * 55) * 0.075 + sin(t * 2 * .pi * 110) * 0.025
             case .quietCafe:
-                let murmur = sin(t * 2 * .pi * 137) * (0.03 + 0.012 * sin(t * 0.71))
-                    + sin(t * 2 * .pi * 211) * (0.02 + 0.01 * sin(t * 0.43))
-                sample = low * 0.9 + pink * 0.025 + murmur
+                let conversation = distantVoice(t, pitch: 104, phraseRate: 0.19, syllableRate: 2.35, phase: 0.4)
+                    + distantVoice(t, pitch: 137, phraseRate: 0.23, syllableRate: 2.82, phase: 2.2)
+                    + distantVoice(t, pitch: 176, phraseRate: 0.17, syllableRate: 3.18, phase: 4.6)
+                    + distantVoice(t, pitch: 121, phraseRate: 0.27, syllableRate: 2.58, phase: 5.5)
+                let consonantHush = (white - softer) * 0.035 * (0.55 + 0.45 * abs(sin(t * 2 * .pi * 2.7)))
+                sample = low * 0.34 + pink * 0.012 + conversation + consonantHush
             case .libraryRoom:
                 let pageDelta = t.truncatingRemainder(dividingBy: 12) - 6.4
                 let page = pageDelta >= 0 && pageDelta < 1.2 ? sin(pageDelta * .pi / 1.2) * (white - softer) * 0.4 : 0

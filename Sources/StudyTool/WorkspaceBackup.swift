@@ -45,7 +45,7 @@ struct WorkspaceBackup: Codable {
 
     func validate() throws {
         guard formatVersion == 1 else { throw WorkspaceFailure.invalid("This backup format is not supported by this app version.") }
-        let ids = decks.map(\.id) + decks.flatMap(\.cards).map(\.id) + todoLists.map(\.id) + todoLists.flatMap(\.items).map(\.id) + notes.map(\.id)
+        let ids = decks.map(\.id) + decks.flatMap(\.cards).map(\.id) + todoLists.map(\.id) + todoLists.flatMap(\.items).map(\.id) + notes.map(\.id) + notes.flatMap(\.pages).map(\.id)
         guard Set(ids).count == ids.count, !todoLists.isEmpty,
               decks.allSatisfy({ !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
               todoLists.allSatisfy({ !$0.name.isEmpty && $0.items.allSatisfy { !$0.title.isEmpty } }) else {
@@ -111,7 +111,7 @@ struct WorkspaceBackup: Codable {
         try imported.validate()
         var result = self
         let allIDs = imported.decks.map(\.id) + imported.decks.flatMap(\.cards).map(\.id)
-            + imported.todoLists.map(\.id) + imported.todoLists.flatMap(\.items).map(\.id) + imported.notes.map(\.id)
+            + imported.todoLists.map(\.id) + imported.todoLists.flatMap(\.items).map(\.id) + imported.notes.map(\.id) + imported.notes.flatMap(\.pages).map(\.id)
         let archivedIDs = (imported.workspace.deletedFlashcards ?? []).flatMap { [$0.deck.id] + $0.deck.cards.map(\.id) }
         let mapping = Dictionary(uniqueKeysWithValues: Set(allIDs + archivedIDs).map { ($0, UUID()) })
         func ref(_ old: StudyItemReference) -> StudyItemReference? {
@@ -126,7 +126,11 @@ struct WorkspaceBackup: Codable {
             var list = old; list.id = mapping[old.id]!
             list.items = old.items.map { var item = $0; item.id = mapping[item.id]!; item.materials = item.materials?.compactMap(ref); return item }; return list
         }
-        result.notes += imported.notes.map { var note = $0; note.id = mapping[note.id]!; return note }
+        result.notes += imported.notes.map { old in
+            var note = old; note.id = mapping[old.id]!
+            note.pages = old.pages.map { var page = $0; page.id = mapping[page.id]!; return page }
+            return note
+        }
         for pin in imported.workspace.pins where result.workspace.pins.count < 5 {
             if let reference = ref(pin.reference) { result.workspace.pins.append(PinnedItem(reference: reference, pinnedAt: pin.pinnedAt)) }
         }
