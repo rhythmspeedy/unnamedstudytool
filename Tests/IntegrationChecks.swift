@@ -55,9 +55,13 @@ import AVFoundation
             let data = AmbientAudioController.wave(sound)
             try check(data.count == 44 + 22_050 * 24 * 2, "\(sound.title) has the expected duration")
             try check(String(decoding: data.prefix(4), as: UTF8.self) == "RIFF" && String(decoding: data[8..<12], as: UTF8.self) == "WAVE", "\(sound.title) is a WAV file")
-            if sound != .silence { try check(data.dropFirst(44).contains { $0 != 0 }, "\(sound.title) contains audible samples") }
-            let player = try AVAudioPlayer(data: data, fileTypeHint: AVFileType.wav.rawValue)
-            try check(player.prepareToPlay() && abs(player.duration - 24) < 0.01, "\(sound.title) decodes as 24-second audio")
+            if sound == .silence {
+                try check(data.dropFirst(44).allSatisfy { $0 == 0 }, "Silence contains only zeroed samples")
+            } else {
+                try check(data.dropFirst(44).contains { $0 != 0 }, "\(sound.title) contains audible samples")
+                let player = try AVAudioPlayer(data: data, fileTypeHint: AVFileType.wav.rawValue)
+                try check(abs(player.duration - 24) < 0.01, "\(sound.title) decodes as 24-second audio")
+            }
             generated.insert(data)
         }
         try check(generated.count == AmbientSound.allCases.count, "Every ambient choice generates a distinct texture")

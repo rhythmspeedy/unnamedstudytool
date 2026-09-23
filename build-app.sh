@@ -1,7 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
-swift build -c release
+. scripts/swift-toolchain.sh
+configure_swift_toolchain
+swift build -c release --sdk "$SDKROOT"
 APP="$(pwd)/unnamedstudytool.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swift Resources/MakeIcon.swift .build/AppIcon.iconset
